@@ -5,9 +5,9 @@ from skimage.color import rgb2gray
 import cv2
 import numpy as np
 import time
-import io
 import pickle
-
+from tqdm import tqdm
+from utils import io
 import matplotlib.pyplot as plt
 
 
@@ -132,3 +132,54 @@ def get_dominant_color(episode_names, video_paths, path_to_save=None):
     
     if path_to_save is not None:
         pickle.dump(feat_dict, open(path_to_save, 'wb'))
+
+
+def create_foreground_masks_video(episode_path):
+    cap = io.load_video(episode_path)
+    frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    shape = (int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)))
+    out_video = cv2.VideoWriter(
+        episode_path.replace('.avi', '_foreground.avi'), 
+        cv2.VideoWriter_fourcc(*'H264'), 
+        fps, 
+        shape,
+        isColor=False
+    )
+
+    prev_flow = None
+    prev_frame = None
+    for i in tqdm(range(frame_count)):
+        _, frame = cap.read()
+        this_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        if prev_flow is None:
+            prev_frame = np.zeros_like(this_frame)
+            prev_flow = np.zeros_like(this_frame, dtype=np.float32)
+
+        flow = cv2.calcOpticalFlowFarneback(
+                prev_frame, 
+                this_frame, 
+                prev_flow, 
+                pyr_scale=0.5, 
+                levels=2, 
+                winsize=100, 
+                iterations=1, 
+                poly_n=7, 
+                poly_sigma=1.7, 
+                flags=cv2.OPTFLOW_FARNEBACK_GAUSSIAN
+            )
+        flow_mag, flow_ang = cv2.cartToPolar(flow[..., 0], flow[..., 1])
+        threshold = max(np.mean(flow_mag) - 0.2 * np.std(flow_mag), 0.3)
+        mask= ((flow_mag > threshold) * 255).astype(np.uint8)
+
+        kernel = np.ones((7,7),np.uint8)
+        mask = cv2.erode(mask, kernel=kernel, iterations=1)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel=kernel, iterations=1)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel=kernel, iterations=1)
+        out_video.write(mask)
+
+        prev_frame = this_frame
+        prev_flow = flow
+
+    cap.release()
+    out_video.release()
