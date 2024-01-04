@@ -6,6 +6,7 @@ import cv2
 import numpy as np
 import time
 import pickle
+import librosa
 from tqdm import tqdm
 from utils import io
 import matplotlib.pyplot as plt
@@ -139,8 +140,10 @@ def create_foreground_masks_video(episode_path):
     frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     fps = cap.get(cv2.CAP_PROP_FPS)
     shape = (int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)))
+    out_path = episode_path.replace('.avi', '_foreground.avi')
+    out_path = out_path.replace('videos', 'features')
     out_video = cv2.VideoWriter(
-        episode_path.replace('.avi', '_foreground.avi'), 
+        out_path,
         cv2.VideoWriter_fourcc(*'H264'), 
         fps, 
         shape,
@@ -183,3 +186,39 @@ def create_foreground_masks_video(episode_path):
 
     cap.release()
     out_video.release()
+
+
+
+def get_biggest_stft_peaks(rec, sr, frame_length, hop_length, top_k=5):
+    stft = librosa.stft(y=rec, n_fft=frame_length, hop_length=hop_length)
+    
+    stft_mag = np.abs(stft)
+    freqs = librosa.fft_frequencies(sr=sr, n_fft=frame_length)
+
+    highest_mags_feature = np.zeros((stft_mag.shape[1], top_k))
+    freqs_feature = np.zeros((stft_mag.shape[1], top_k))
+
+    for sample_idx in range(stft_mag.shape[1]):
+        peaks = librosa.util.peak_pick(
+                    stft_mag[:, sample_idx], 
+                    pre_max=30, 
+                    post_max=30, 
+                    pre_avg = 30, 
+                    post_avg = 30, 
+                    delta=0.4, 
+                    wait=30
+                    )
+        if len(peaks) <= 0:
+            continue
+
+        peak_freqs = freqs[peaks]
+        peak_mags = stft_mag[peaks, sample_idx]
+        sorted_idx = np.argsort(peak_mags)[::-1]
+        peak_freqs = peak_freqs[sorted_idx]
+        peak_mags = peak_mags[sorted_idx]
+
+        n_peaks = min(top_k, len(peaks))
+        highest_mags_feature[sample_idx, :n_peaks] = peak_mags[:n_peaks]
+        freqs_feature[sample_idx, :n_peaks] = peak_freqs[:n_peaks]
+        
+    return highest_mags_feature, freqs_feature
