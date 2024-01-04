@@ -10,6 +10,8 @@ import librosa
 from tqdm import tqdm
 from utils import io
 import matplotlib.pyplot as plt
+from sklearn.cluster import MiniBatchKMeans
+from scipy.cluster.vq import whiten
 
 
 def detect_blob(image, sigma, mu, gauss=True, debug=False):
@@ -24,6 +26,7 @@ def detect_blob(image, sigma, mu, gauss=True, debug=False):
 
     start = time.time()
     blobs_doh = blob_doh(image_gray, min_sigma=10, max_sigma=500, threshold=.01)
+    blobs_doh = blobs_doh[blobs_doh[:, 2] > 20]
     end = time.time()
     # print("Blobdoh: ", end - start)
 
@@ -32,6 +35,7 @@ def detect_blob(image, sigma, mu, gauss=True, debug=False):
     titles = ['Determinant of Hessian']
     sequence = zip(blobs_list, colors, titles)
 
+    list_blobs = []
     if debug:
         fig, ax = plt.subplots(1, 1, figsize=(4, 4), sharex=True, sharey=True)
 
@@ -40,9 +44,11 @@ def detect_blob(image, sigma, mu, gauss=True, debug=False):
             ax.imshow(image_gray)
             for blob in blobs:
                 y, x, r = blob
+                list_blobs.append(r)
                 c = plt.Circle((x, y), r, color=color, linewidth=2, fill=False)
                 ax.add_patch(c)
             ax.set_axis_off()
+            print(sorted(list_blobs, reverse=True))
 
         plt.tight_layout()
         plt.show()
@@ -114,41 +120,84 @@ def detect_blob_cv(im, im_bgr, im_hsv, mu_v=225, sigma_v=35, mu_h=40, sigma_h=35
     return keypoints
 
 
-def get_dominant_color(episode_names, video_paths, path_to_save=None):
-    feat_dict = {}
-    for ep in episode_names:
-        cap = io.load_video(video_paths[ep])
-        frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        feat_list = []  
+def get_dominant_colors(episode_path, episode_name, n_clusters = 5, batch_size = 2048, type='full'):
+    '''
+    type: full, foreground, background: Full uses the entire image, foreground only uses pixels inside the foreground mask, background uses pixels outside the foreground mask
+    '''
+    cap = io.load_video(episode_path)
+    if type != 'full':
+        foreground_video = io.load_video("../data/features/{}_foreground.avi".format(episode_name))
+    frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    hue_list = []
+
+    for i in tqdm(range(frame_count)):
+        _, image = cap.read()
         
-        for i in range(frame_count):
-            _, frame = cap.read()
-            dc = get_dominant_color(frame)[1]
-            feat_list.append(dc)
+        if type != 'full':
+            _, fg = foreground_video.read()
+            if type == 'foreground':
+                image[fg == 0] = 0
+            elif type == 'background':
+                image[fg != 0] = 0
 
-        feat_dict[ep] = np.array(feat_list)[1:]
+        image = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+        hue = image[:, :, 0].flatten()
+        hue_std = hue.std()
+        if hue_std == 0:
+            hue_list.append([[0, 0] for _ in range(n_clusters)])
+            continue
+        scaled_hue = np.expand_dims(whiten(hue), -1)
 
-        del feat_list
-        cap.release()
-    
-    if path_to_save is not None:
-        pickle.dump(feat_dict, open(path_to_save, 'wb'))
+        km = MiniBatchKMeans(n_clusters = n_clusters, batch_size=batch_size, n_init='auto').fit(scaled_hue)
+        cluster_centers = km.cluster_centers_
+
+        dominant_hues = []
+        for cluster_center in cluster_centers:
+            hue_scaled = cluster_center[0]
+            # Convert each standardized value to scaled value
+            dominant_hues.append(
+                hue_scaled * hue_std,
+            )
+
+        hues = np.asarray(dominant_hues, dtype='uint8')
+
+        percentage = np.asarray(np.unique(km.labels_, return_counts = True)[1], dtype='float32')
+        percentage = percentage/(image.shape[0]*image.shape[1])
+
+        if len(percentage) < n_clusters:
+            percentage = np.append(percentage, np.zeros(n_clusters - len(percentage)))
+
+        dom = [[percentage[ix], hues[ix]] for ix in range(km.n_clusters)]
+        dominance = sorted(dom, key=lambda x:x[0], reverse=True)
+
+        hue_list.append(dominance)
+
+        del km
+
+    cap.release()
+    if type != 'full':
+        foreground_video.release()
+
+    return np.array(hue_list)[1:]
 
 
-def create_foreground_masks_video(episode_path):
+def create_foreground_masks_video(episode_path, write_video=True):
     cap = io.load_video(episode_path)
     frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    mean_flow = np.zeros(frame_count)
+    std_dev_flow = np.zeros(frame_count)
     fps = cap.get(cv2.CAP_PROP_FPS)
     shape = (int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)))
     out_path = episode_path.replace('.avi', '_foreground.avi')
     out_path = out_path.replace('videos', 'features')
-    out_video = cv2.VideoWriter(
-        out_path,
-        cv2.VideoWriter_fourcc(*'H264'), 
-        fps, 
-        shape,
-        isColor=False
-    )
+    if write_video:
+        out_video = cv2.VideoWriter(
+            out_path,
+            cv2.VideoWriter_fourcc(*'H264'), 
+            fps, 
+            shape,
+            isColor=False
+        )
 
     prev_flow = None
     prev_frame = None
@@ -172,6 +221,8 @@ def create_foreground_masks_video(episode_path):
                 flags=cv2.OPTFLOW_FARNEBACK_GAUSSIAN
             )
         flow_mag, flow_ang = cv2.cartToPolar(flow[..., 0], flow[..., 1])
+        mean_flow[i] = np.mean(flow_mag)
+        std_dev_flow[i] = np.std(flow_mag)
         threshold = max(np.mean(flow_mag) - 0.2 * np.std(flow_mag), 0.3)
         mask= ((flow_mag > threshold) * 255).astype(np.uint8)
 
@@ -179,13 +230,18 @@ def create_foreground_masks_video(episode_path):
         mask = cv2.erode(mask, kernel=kernel, iterations=1)
         mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel=kernel, iterations=1)
         mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel=kernel, iterations=1)
-        out_video.write(mask)
+        if write_video:
+            out_video.write(mask)
 
         prev_frame = this_frame
         prev_flow = flow
-
+    feat_dict = {}
+    feat_dict['mean_flow'] = mean_flow
+    feat_dict['std_dev_flow'] = std_dev_flow
+    pickle.dump(feat_dict, open(out_path.replace('.avi', '.pkl'), 'wb'))
     cap.release()
-    out_video.release()
+    if write_video:
+        out_video.release()
 
 
 
@@ -220,5 +276,42 @@ def get_biggest_stft_peaks(rec, sr, frame_length, hop_length, top_k=5):
         n_peaks = min(top_k, len(peaks))
         highest_mags_feature[sample_idx, :n_peaks] = peak_mags[:n_peaks]
         freqs_feature[sample_idx, :n_peaks] = peak_freqs[:n_peaks]
-        
+
     return highest_mags_feature, freqs_feature
+
+
+def get_kermitian_pixels(episode_path, episode_name):
+    cap = io.load_video(episode_path)
+    foreground_video_path = f"../data/features/{episode_name}_foreground.avi"
+    foreground_video = io.load_video(foreground_video_path)
+    frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    
+    kermit_pixels_fg_arr = np.zeros(frame_count)
+    kermit_pixels_bg_arr = np.zeros(frame_count)
+    kermit_pixels_ratio = np.zeros(frame_count)
+    for i in tqdm(range(frame_count)):
+        _, image = cap.read()
+        _, foreground_mask = foreground_video.read()
+
+        image_hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+        foreground_mask = cv2.cvtColor(foreground_mask, cv2.COLOR_BGR2GRAY)
+        foreground = image_hsv[foreground_mask != 0]
+        background = image_hsv[foreground_mask == 0]
+        if foreground.shape[0] == 0 or background.shape[0] == 0:
+            continue
+        kermit_pixels_fg = ((foreground[:, 0] >= 25) & (foreground[:, 0] <= 50) & 
+                            #(foreground[:, :, 1] >= 100) & (foreground[:, :, 1] <= 255) &
+                            (foreground[:, 2] >= 80) & (foreground[:, 2] <= 180)).sum()
+        kermit_pixels_bg = ((background[:, 0] >= 25) & (background[:, 0] <= 50) & 
+                            #(background[:, :, 1] >= 100) & (background[:, :, 1] <= 255) &
+                            (background[:, 2] >= 80) & (background[:, 2] <= 180)).sum()
+        if kermit_pixels_fg == 0 and kermit_pixels_bg == 0:
+            continue
+        kermit_pixels_ratio[i] = kermit_pixels_fg / (kermit_pixels_fg + kermit_pixels_bg)
+        kermit_pixels_fg_arr[i] = kermit_pixels_fg
+        kermit_pixels_bg_arr[i] = kermit_pixels_bg
+    feat = {}
+    feat['num_kermit_pixels_foreground'] = kermit_pixels_fg_arr[1:]
+    feat['num_kermit_pixels_background'] = kermit_pixels_bg_arr[1:]
+    feat['kermit_pixels_ratio'] = kermit_pixels_ratio[1:]
+    return feat
