@@ -1,34 +1,35 @@
 ### CV: 
-- [ ] Separate each episode in 2 parts
-- [ ] Implement an inner CV loop:
-  - [ ] Train model for each hyperparam combi
-  - [ ] Compute metrics
-  - [ ] For each hyperparam combi, average metrics
-  - [ ] Find best hyperparam combi based on average metrics
-  - [ ] Train full model with chosen hyperparam options on the full inner CV data
-- [ ] Implement outer CV loop:
-  - [ ] Compute metrics on test fold for each model type
-  - [ ] Compare models based on metrics computed on test fold
+- [x] Separate each episode in 2 parts
+- [x] Implement an inner CV loop:
+  - [x] Train model for each hyperparam combi
+  - [x] Compute metrics
+  - [x] For each hyperparam combi, average metrics
+  - [x] Find best hyperparam combi based on average metrics
+  - [x] Train full model with chosen hyperparam options on the full inner CV data
+- [x] Implement outer CV loop:
+  - [x] Compute metrics on test fold for each model type
+  - [x] Compare models based on metrics computed on test fold
 
 
 ### SimMod 1
 Detecting Kermit and Gentlemen
 #### Video features:
 - [ ] Color histogram:
-  - [ ] Create color histogram
-  - [ ] Check color histograms and dominant color for Kermit and Gentlemen
-  - [ ] Use the colors as feature for classifier (present in the frame or not)
+  - [x] Create color histogram
+  - [x] Check color histograms and dominant color for Kermit and Gentlemen
+  - [x] Use the colors as feature for classifier (present in the frame or not)
+  - [x] Kermit Hue 25-50
 - [ ] Use pictures with colors changed to primary colors by clustering as input for blob detection
 - [ ] Try to improve feature for lines for gentlemen balcony (do as feature lines present in a specific part of the image and intersection)
-- [ ] Foreground detection + optical flow
+- [x] Foreground detection + optical flow
 #### Audio features:
 - [x] RMS
 - [x] ZCR
-- [ ] FT + 1st peak
+- [x] FT + 1st peak
 #### Run experiments:
 - [ ] Random Forest
 - [ ] KNN
-- [ ] Vector Space
+- [ ] Decision Tree
 
 
 ### SimMod 2
