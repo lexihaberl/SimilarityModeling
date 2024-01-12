@@ -46,15 +46,27 @@ def get_episode_names_video_paths(videos_folder):
     return episode_names, video_paths
 
 
-def get_gt_df(episode_names, gt_folder):
+def get_gt_df(episode_names, gt_folder, episode_splits = {
+        'Muppets-02-01-01': 19718,
+        'Muppets-02-04-04': 19466,
+        'Muppets-03-04-03': 19435,
+    }):
     gt_dfs = []
+    split_counter = 0
     for file in os.listdir(gt_folder):
         if file.endswith(".csv"):
             file_path = os.path.join(gt_folder, file)
             df = pd.read_csv(file_path, sep=";")
             episode_name = file.split('.')[0]
+
             assert episode_name in episode_names
+
             df['episode'] = episode_name
+            df['episode_split'] = split_counter
+            df.loc[df.Frame_number < episode_splits[episode_name], 'episode_split'] = split_counter + 1
+
+            split_counter += 2
+
             gt_dfs.append(df)
     gt_df = pd.concat(gt_dfs)
 

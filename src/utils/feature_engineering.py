@@ -313,5 +313,6 @@ def get_kermitian_pixels(episode_path, episode_name):
     feat = {}
     feat['num_kermit_pixels_foreground'] = kermit_pixels_fg_arr[1:]
     feat['num_kermit_pixels_background'] = kermit_pixels_bg_arr[1:]
+    feat['num_kermit_pixels'] = kermit_pixels_fg_arr[1:] + kermit_pixels_bg_arr[1:]
     feat['kermit_pixels_ratio'] = kermit_pixels_ratio[1:]
     return feat
