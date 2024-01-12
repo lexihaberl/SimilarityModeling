@@ -122,6 +122,9 @@ def detect_blob_cv(im, im_bgr, im_hsv, mu_v=225, sigma_v=35, mu_h=40, sigma_h=35
 
 def get_dominant_colors(episode_path, episode_name, n_clusters = 5, batch_size = 2048, type='full'):
     '''
+    Computes the dominant hues in each frame of the video using KMeans clustering.
+    The returned array is of shape (n_frames, n_clusters, 2) where the second dimension is the percentage of pixels in the frame that belong to the cluster and the hue of the cluster.
+
     type: full, foreground, background: Full uses the entire image, foreground only uses pixels inside the foreground mask, background uses pixels outside the foreground mask
     '''
     cap = io.load_video(episode_path)
@@ -182,6 +185,11 @@ def get_dominant_colors(episode_path, episode_name, n_clusters = 5, batch_size =
 
 
 def create_foreground_masks_video(episode_path, write_video=True):
+    '''
+    Creates a video of the foreground masks for each frame in the video and saves it as a video to the features folder.
+    The foreground mask is created by using the Farneback optical flow algorithm to detect motion in the video. 
+    The magnitude of the flow is thresholded to create a mask. The threshold is set to be the mean flow magnitude minus 0.2 times the standard deviation of the flow magnitude.
+    '''
     cap = io.load_video(episode_path)
     frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     mean_flow = np.zeros(frame_count)
@@ -246,6 +254,9 @@ def create_foreground_masks_video(episode_path, write_video=True):
 
 
 def get_biggest_stft_peaks(rec, sr, frame_length, hop_length, top_k=5):
+    '''
+    Computes the STFT of the audio signal and returns the top_k peaks (value and frequency) in each frame of the STFT.
+    '''
     stft = librosa.stft(y=rec, n_fft=frame_length, hop_length=hop_length)
     
     stft_mag = np.abs(stft)
@@ -281,6 +292,9 @@ def get_biggest_stft_peaks(rec, sr, frame_length, hop_length, top_k=5):
 
 
 def get_kermitian_pixels(episode_path, episode_name):
+    '''
+    Computes the number of pixels in each frame inside the foreground and background masks that are within the HSV range of Kermit's color.
+    '''
     cap = io.load_video(episode_path)
     foreground_video_path = f"../data/features/{episode_name}_foreground.avi"
     foreground_video = io.load_video(foreground_video_path)
