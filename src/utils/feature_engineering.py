@@ -12,6 +12,7 @@ from utils import io
 import matplotlib.pyplot as plt
 from sklearn.cluster import MiniBatchKMeans
 from scipy.cluster.vq import whiten
+import mahotas as mt
 
 
 def detect_blob(image, sigma, mu, gauss=True, debug=False):
@@ -330,3 +331,137 @@ def get_kermitian_pixels(episode_path, episode_name):
     feat['num_kermit_pixels'] = kermit_pixels_fg_arr[1:] + kermit_pixels_bg_arr[1:]
     feat['kermit_pixels_ratio'] = kermit_pixels_ratio[1:]
     return feat
+
+def extract_foreground(orig_image):
+    '''
+    Extracts the foreground from an image using GrabCut.
+    
+    Args:
+        image: A 3D numpy array representing the image.
+        
+    Returns:
+        A 3D numpy array representing the foreground.
+    '''
+    resize_factor = 8
+    image = cv2.resize(orig_image, (orig_image.shape[1]//resize_factor, orig_image.shape[0]//resize_factor))
+    mask = np.zeros(image.shape[:2], np.uint8)
+    bgdModel = np.zeros((1,65),np.float64)
+    fgdModel = np.zeros((1,65),np.float64)
+    
+    rect = (5,5,image.shape[1]-5,image.shape[0]-5)
+    cv2.grabCut(image, mask, rect, bgdModel, fgdModel, 5, cv2.GC_INIT_WITH_RECT)
+    mask2 = np.where((mask==2)|(mask==0),0,1).astype('uint8')
+    mask2 = cv2.resize(mask2, (orig_image.shape[1], orig_image.shape[0]))
+    foreground = orig_image*mask2[:,:,np.newaxis]
+    return foreground, mask2
+
+
+def get_pig_pixels(episode_path):
+    '''
+    Computes the number of pixels in each frame inside the foreground and background masks that are within the HSV range of a Pigs's color.
+    Uses masks form GrabCut to extract the foreground.
+    '''
+    print(episode_path)
+    cap = io.load_video(episode_path)
+    frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    
+    pig_pixels_fg_arr = np.zeros(frame_count)
+    pig_pixels_bg_arr = np.zeros(frame_count)
+    pig_pixels_ratio = np.zeros(frame_count)
+    for i in tqdm(range(frame_count)):
+        _, image = cap.read()
+        image = cv2.resize(image, (image.shape[1]//2, image.shape[0]//2))
+        
+        image_hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+        foreground_mask = extract_foreground(image)[1]
+        foreground = image_hsv[foreground_mask != 0]
+        background = image_hsv[foreground_mask == 0]
+        if foreground.shape[0] == 0 or background.shape[0] == 0:
+            continue
+        
+        pig_pixels_fg = (((foreground[:, 0] < 15) | (foreground[:, 0] > 175)) & 
+                            (foreground[:, 1] > 80) & (foreground[:, 1] < 150) &
+                            (foreground[:, 2] > 100) & (foreground[:, 2] < 170)).sum()
+        pig_pixels_bg = (((background[:, 0] < 15) | (background[:, 0] > 175)) &
+                            (background[:, 1] > 80) & (background[:, 1] < 150) &
+                            (background[:, 2] > 100) & (background[:, 2] < 170)).sum()
+
+        if pig_pixels_fg == 0 and pig_pixels_bg == 0:
+            continue
+        pig_pixels_ratio[i] = pig_pixels_fg / (pig_pixels_fg + pig_pixels_bg)
+        pig_pixels_fg_arr[i] = pig_pixels_fg
+        pig_pixels_bg_arr[i] = pig_pixels_bg
+    feat = {}
+    feat['num_pig_pixels_foreground'] = pig_pixels_fg_arr[1:]
+    feat['num_pig_pixels_background'] = pig_pixels_bg_arr[1:]
+    feat['num_pig_pixels'] = pig_pixels_fg_arr[1:] + pig_pixels_bg_arr[1:]
+    feat['pig_pixels_ratio'] = pig_pixels_ratio[1:]
+    return feat
+
+    
+
+def get_sift(video_paths, episode_names):
+    FLANN_INDEX_LSH = 6
+    index_params= dict(algorithm = FLANN_INDEX_LSH,
+                table_number = 6, # 12
+                key_size = 12,     # 20
+                multi_probe_level = 1) #2
+    search_params = dict(checks=50)   
+    flann = cv2.FlannBasedMatcher(index_params, search_params)
+
+    cap = cv2.VideoCapture(video_paths[episode_names[0]])
+    cap.set(1, 19500)
+    ret, reference = cap.read()
+    reference = cv2.cvtColor(reference, cv2.COLOR_BGR2RGB)
+    plt.imshow(reference)
+
+    cap.set(1, 19600)
+    ret, frame = cap.read()
+    frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    cap.release()
+
+    reference = extract_foreground(reference)
+    frame = extract_foreground(frame)
+    plt.imshow(reference)
+    plt.imshow(frame)
+
+    # Initiate ORB detector
+    orb = cv2.ORB_create()
+    kp_ref, des_ref = orb.detectAndCompute(reference, None)
+    kp, des = orb.detectAndCompute(frame, None)
+
+
+    matches = flann.knnMatch(des_ref,des,k=2)
+    # Need to draw only good matches, so create a mask
+    matchesMask = [[0,0] for i in range(len(matches))]
+    # ratio test as per Lowe's paper
+    for i,(m,n) in enumerate(matches):
+        if m.distance < 0.7*n.distance:
+            matchesMask[i]=[1,0]
+    draw_params = dict(matchColor = (0,255,0),
+                    singlePointColor = (255,0,0),
+                    matchesMask = matchesMask,
+                    flags = cv2.DrawMatchesFlags_DEFAULT)
+    img3 = cv2.drawMatchesKnn(reference,kp_ref,frame,kp,matches,None,**draw_params)
+    plt.figure(figsize=(20,10))
+    plt.imshow(img3,),plt.show()
+
+def extract_haralick_texture(video_paths, episode_names):
+    texture_feat = {}
+    for episode in episode_names:
+        cap = cv2.VideoCapture(video_paths[episode])
+        frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        textures = np.zeros((frame_count, 13))
+        for i in tqdm(range(frame_count)):
+            cap.set(1, i)
+            ret, frame = cap.read()
+            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            frame_fg = extract_foreground(frame)
+            frame_fg_resized = cv2.resize(frame_fg, (frame_fg.shape[1]//4, frame_fg.shape[0]//4))
+            haralick = mt.features.haralick(frame_fg_resized)
+            texture = haralick.mean(axis=0)
+            textures[i] = texture
+        cap.release()
+        texture_feat[episode] = {'texture': textures[1:]}
+
+    return texture_feat
