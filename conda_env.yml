@@ -17,5 +17,7 @@ dependencies:
   - librosa=0.10.1
   - scikit-image
   - tqdm
+  - hmmlearn
+  - mahotas
   - pip:
       - ipywidgets==8.1.1
