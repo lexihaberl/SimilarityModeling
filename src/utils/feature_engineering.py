@@ -12,6 +12,7 @@ from utils import io
 import matplotlib.pyplot as plt
 from sklearn.cluster import MiniBatchKMeans
 from scipy.cluster.vq import whiten
+from hmmlearn.hmm import GaussianHMM
 import mahotas as mt
 
 
@@ -465,3 +466,175 @@ def extract_haralick_texture(video_paths, episode_names):
         texture_feat[episode] = {'texture': textures[1:]}
 
     return texture_feat
+
+
+def cmvnw(vec, win_size=301, variance_normalization=False):
+    """ This function is aimed to perform local cepstral mean and
+    variance normalization on a sliding window. The code assumes that
+    there is one observation per row.
+
+    Args:
+        vec (array): input feature matrix
+            (size:(num_observation,num_features))
+        win_size (int): The size of sliding window for local normalization.
+            Default=301 which is around 3s if 100 Hz rate is
+            considered(== 10ms frame stide)
+        variance_normalization (bool): If the variance normilization should
+            be performed or not.
+
+    Return:
+          array: The mean(or mean+variance) normalized feature vector.
+    """
+    # Get the shapes
+    eps = 2**-30
+    rows, cols = vec.shape
+
+    # Windows size must be odd.
+    assert isinstance(win_size, int), "Size must be of type 'int'!"
+    assert win_size % 2 == 1, "Windows size must be odd!"
+
+    # Padding and initial definitions
+    pad_size = int((win_size - 1) / 2)
+    vec_pad = np.lib.pad(vec, ((pad_size, pad_size), (0, 0)), 'symmetric')
+    mean_subtracted = np.zeros(np.shape(vec), dtype=np.float32)
+
+    for i in range(rows):
+        window = vec_pad[i:i + win_size, :]
+        window_mean = np.mean(window, axis=0)
+        mean_subtracted[i, :] = vec[i, :] - window_mean
+
+    # Variance normalization
+    if variance_normalization:
+
+        # Initial definitions.
+        variance_normalized = np.zeros(np.shape(vec), dtype=np.float32)
+        vec_pad_variance = np.lib.pad(
+            mean_subtracted, ((pad_size, pad_size), (0, 0)), 'symmetric')
+
+        # Looping over all observations.
+        for i in range(rows):
+            window = vec_pad_variance[i:i + win_size, :]
+            window_variance = np.std(window, axis=0)
+            variance_normalized[i, :] \
+            = mean_subtracted[i, :] / (window_variance + eps)
+        output = variance_normalized
+    else:
+        output = mean_subtracted
+
+    return output
+
+
+def get_audio_librosa(video_paths, ep, gt_df):
+    rec, sr = librosa.load(video_paths[ep], sr=None)
+
+    frame_size_ms = 100
+    hop_length = int(1/25 * sr)
+    frame_length = int(frame_size_ms / 1000 * sr)
+    
+    desired_len = len(gt_df[gt_df.episode==ep])
+
+    return rec, sr, frame_length, hop_length, desired_len
+
+
+def get_mfcc(episode_names, video_paths, gt_df):
+    ep_dfs = {}
+    for ep in episode_names:
+        rec, sr, frame_length, hop_length, desired_len = get_audio_librosa(video_paths, ep, gt_df)
+
+        mfcc = librosa.feature.mfcc(y=rec, sr=sr, n_fft=frame_length, hop_length=hop_length)
+        mfcc = np.pad(mfcc, pad_width=((0, 0), (0, desired_len - mfcc.shape[1])))
+        normalized_mfcc = cmvnw(mfcc.T, win_size=frame_length+1, variance_normalization=True)
+        delta_mfccs = librosa.feature.delta(mfcc).T
+        delta_2_mfccs = librosa.feature.delta(mfcc, order=2).T
+    
+        feats = {}
+
+        mfcc = mfcc.T
+        for i in range(mfcc.shape[1]):
+            feats[f'mfcc_{i}'] = mfcc[:, i]
+
+        for i in range(delta_mfccs.shape[1]):
+            feats[f'delta_mfccs_{i}'] = delta_mfccs[:, i]
+
+        for i in range(delta_2_mfccs.shape[1]):
+            feats[f'delta_2_mfccs_{i}'] = delta_2_mfccs[:, i]
+
+        for i in range(normalized_mfcc.shape[1]):
+            feats[f'normalized_mfcc_{i}'] = normalized_mfcc[:, i]
+
+        ep_dfs[ep] = feats
+    return ep_dfs
+
+
+def get_chroma(episode_names, video_paths, gt_df):
+    ep_dfs = {}
+    for ep in episode_names:
+        rec, sr, frame_length, hop_length, desired_len = get_audio_librosa(video_paths, ep, gt_df)
+        
+        chroma = librosa.feature.chroma_stft(y=rec, sr=sr, n_fft=frame_length, hop_length=hop_length, )
+        chroma = np.pad(chroma, pad_width=((0, 0), (0, desired_len - chroma.shape[1])))
+
+        chroma = chroma.T 
+        ep_dfs[ep] = {}
+        for i in range(chroma.shape[1]):
+            ep_dfs[ep][f'chroma_{i}'] = chroma[:, i]
+
+    return ep_dfs
+
+
+def get_spectral_contrast(episode_names, video_paths, gt_df):
+    ep_dfs = {}
+    for ep in episode_names:
+        rec, sr, frame_length, hop_length, desired_len = get_audio_librosa(video_paths, ep, gt_df)
+        
+        contrast = librosa.feature.spectral_contrast(y=rec, sr=sr, n_fft=frame_length, hop_length=hop_length, )
+        contrast = np.pad(contrast, pad_width=((0, 0), (0, desired_len - contrast.shape[1])))
+
+        contrast = contrast.T
+        ep_dfs[ep] = {}
+        for i in range(contrast.shape[1]):
+            ep_dfs[ep][f'chroma_{i}'] = contrast[:, i]
+    return ep_dfs
+
+
+def get_sequences_for_hmm_mfcc(episode_names, video_paths, gt_df, target_cols=['Audio_Pigs', 'Audio_Cook']):
+    # feature for real classifier: scorepig, score_nonpig, score_cook, score_noncook, then probably also boolean flags for cook and pig
+    n_mfcc = 13
+
+    recordings = {}
+    for ep in episode_names:
+        rec, sr = librosa.load(video_paths[ep], sr=None)
+        recordings[ep] = ((rec, sr))
+
+    sequences_dict = {}
+    for target_col in target_cols:
+        background_noise_mask = (gt_df[target_col]==0)
+        gt_df[f'no_{target_col}'] = 0
+        gt_df.loc[background_noise_mask, f'no_{target_col}'] = 1
+
+        #find sequences in gt where target is 1
+        sequences = {}
+        sequences_dict[target_col] = sequences
+        for target in [target_col, f'no_{target_col}']:
+            sequences[target] = []
+            for ep in episode_names:
+                mask = gt_df[gt_df.episode==ep][target]
+                sequence = []
+                for i in range(0,len(mask)):
+                    if mask[i] == 1 and len(sequence) < 30:
+                        sequence.append(i)
+                    else:
+                        if len(sequence) > 5:
+                            sequence_start = sequence[0]
+                            sequence_end = sequence[-1]
+                            rec, sr = recordings[ep]
+                            frame_size_ms = 100
+                            hop_length = int(1/25 * sr)
+                            frame_length = int(frame_size_ms / 1000 * sr)
+                            start_audio = int(sequence_start*hop_length)
+                            end_audio = int(sequence_end*hop_length)
+                            mfcc = librosa.feature.mfcc(y=rec[start_audio:end_audio], sr=sr, n_fft=frame_length, hop_length=hop_length, n_mfcc=n_mfcc)
+                            mfcc = np.swapaxes(mfcc, 1,0)
+                            sequences[target].append((ep, sequence_start, sequence_end, mfcc))
+                            sequence = []
+    return sequences_dict
