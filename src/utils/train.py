@@ -139,6 +139,9 @@ def add_hmm_features(recordings, hmm_models, train_X, target_cols=['Audio_Pigs',
 
 
 def get_hmm_df(final_df, sequences, recordings, load_hmm, test_ep, test_start, test_end, class_col, test_split_id):
+    if 'Audio_' not in class_col:
+        class_col = f'Audio_{class_col}'
+        
     if load_hmm:
         hmm_df = pickle.load(open(f"../data/features/audio_features_{class_col}_{test_split_id}.pkl", "rb"))
     else:
